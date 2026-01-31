@@ -1,9 +1,14 @@
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.background import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from redis_om import get_redis_connection, HashModel
 from dotenv import load_dotenv
 import os
 import httpx
+import time
+
+from starlette.background import BackgroundTask
+
 
 load_dotenv()
 PRODUCT_SERVICE_URL = "http://localhost:8000/products"
@@ -23,7 +28,10 @@ app.add_middleware(
 
 # this can be any other db but here for ease I am using same
 redis = get_redis_connection(
-    host=host, port=port, password=password, decode_responses=True
+    host=host, 
+    port=port, 
+    password=password, 
+    decode_responses=True
 )
 
 
@@ -39,16 +47,25 @@ class Order(HashModel):
         database = redis
 
 def order_complelte(order: Order):
+    time.sleep(3)
     order.status = "completed"
-    return order.save()
+    order.save()
+
+    redis.xadd('order_completed', order.model_dump(), "*")
 
 @app.get("/")
 def health():
     return {"message": "Server running successfully"}
 
+@app.get("/orders/{pk}")
+def get_order(pk: str):
+    order = Order.get(pk)
+    redis.xadd("refund_order", order.model_dump(), "*")
+    return order
+
 
 @app.post("/orders")
-async def create(request: Request):
+async def create(request: Request, background_task: BackgroundTasks):
     body = await request.json()
     print("body", body)
     async with httpx.AsyncClient() as client:
@@ -69,6 +86,7 @@ async def create(request: Request):
         status="pending"
     )
     order.save()
+    background_task.add_task(order_complelte, order)
     # order_complelte(order)
     return order
 
